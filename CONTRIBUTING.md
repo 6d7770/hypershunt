@@ -64,6 +64,6 @@ suite on every PR to `main`.
 ## Reporting issues
 
 File bugs and feature requests at
-<https://github.com/MichaelPaddon/hypershunt/issues>.  For a bug, please
+<https://github.com/6d7770/hypershunt/issues>.  For a bug, please
 include the hypershunt version (`hypershunt --version`), a minimal config
 snippet (`hypershunt.kdl`), and the steps to reproduce.
