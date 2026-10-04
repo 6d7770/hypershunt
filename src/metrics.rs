@@ -694,6 +694,18 @@ pub struct ClassSnapshot {
 
 // -- Per-listener counters ----------------------------------------
 
+/// RAII guard for `Metrics::requests_active` -- decrements on drop.
+/// Obtained from `Metrics::active_guard`.
+pub struct ActiveRequestGuard {
+    metrics: Arc<Metrics>,
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.metrics.requests_active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Counters split by listener bind string.  A listener task resolves
 /// its `Arc<ListenerMetrics>` once at spawn (never per request or
 /// per connection) and increments these alongside the process-global
@@ -1206,12 +1218,15 @@ impl Metrics {
         (by_kind, by_vhost)
     }
 
-    pub fn inc_active(&self) {
+    /// Count one in-flight request until the returned guard drops.
+    ///
+    /// A guard rather than a paired inc/dec because a request future
+    /// does not always run to its end: hyper drops it when the client
+    /// disconnects, and a handler can panic.  A hand-written decrement
+    /// is skipped in both cases and the gauge drifts up forever.
+    pub fn active_guard(self: &Arc<Self>) -> ActiveRequestGuard {
         self.requests_active.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn dec_active(&self) {
-        self.requests_active.fetch_sub(1, Ordering::Relaxed);
+        ActiveRequestGuard { metrics: self.clone() }
     }
 
     /// Snapshot of current-state metrics (not period-specific history).
@@ -2205,14 +2220,44 @@ mod tests {
     }
 
     #[test]
-    fn inc_dec_active_tracks_concurrency() {
-        let m = Metrics::new();
-        m.inc_active();
-        m.inc_active();
-        m.inc_active();
+    fn active_guard_tracks_concurrency() {
+        let m = Arc::new(Metrics::new());
+        let g1 = m.active_guard();
+        let _g2 = m.active_guard();
+        let _g3 = m.active_guard();
         assert_eq!(m.requests_active.load(Ordering::Relaxed), 3);
-        m.dec_active();
+        drop(g1);
         assert_eq!(m.requests_active.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn active_guard_releases_when_future_is_cancelled() {
+        // The shape of a client disconnect: the future holding the
+        // guard is dropped at an await point and never resumes.
+        let m = Arc::new(Metrics::new());
+        let fut = {
+            let m = m.clone();
+            async move {
+                let _active = m.active_guard();
+                std::future::pending::<()>().await;
+            }
+        };
+        let mut fut = Box::pin(fut);
+        assert!(futures_poll_once(fut.as_mut()).await.is_none());
+        assert_eq!(m.requests_active.load(Ordering::Relaxed), 1);
+        drop(fut);
+        assert_eq!(m.requests_active.load(Ordering::Relaxed), 0);
+    }
+
+    /// Poll `fut` exactly once; `None` when it is still pending.
+    async fn futures_poll_once<F: std::future::Future>(
+        mut fut: std::pin::Pin<&mut F>,
+    ) -> Option<F::Output> {
+        std::future::poll_fn(|cx| match fut.as_mut().poll(cx) {
+            std::task::Poll::Ready(v) => std::task::Poll::Ready(Some(v)),
+            std::task::Poll::Pending => std::task::Poll::Ready(None),
+        })
+        .await
     }
 
     #[test]

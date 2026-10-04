@@ -347,7 +347,11 @@ impl HypershuntService {
                 ));
             }
 
-            state.metrics.inc_active();
+            // Held to the end of dispatch.  A guard, not a paired
+            // decrement: hyper drops this future when the client
+            // disconnects mid-request, and an early return is easy to
+            // add without one -- either would leak the gauge.
+            let _active = state.metrics.active_guard();
 
             // ACME HTTP-01 challenge interception.
             // Let's Encrypt validates by fetching this path on port 80.
@@ -371,7 +375,6 @@ impl HypershuntService {
                         .expect("known-valid status and header");
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_millis();
-                    state.metrics.dec_active();
                     state.metrics.record(resp.status().as_u16(), elapsed);
                     state.metrics.record_class(
                         crate::metrics::HandlerKind::Acme,
@@ -404,7 +407,6 @@ impl HypershuntService {
             ) {
                 let elapsed = start.elapsed();
                 let ms = elapsed.as_millis();
-                state.metrics.dec_active();
                 state.metrics.record(resp.status().as_u16(), elapsed);
                 state.metrics.record_class(
                     crate::metrics::HandlerKind::Health,
@@ -439,7 +441,6 @@ impl HypershuntService {
                     .expect("known-valid status and headers");
                 let elapsed = start.elapsed();
                 let ms = elapsed.as_millis();
-                state.metrics.dec_active();
                 state.metrics.record(resp.status().as_u16(), elapsed);
                 state.metrics.record_class(
                     crate::metrics::HandlerKind::Jwks,
@@ -478,7 +479,6 @@ impl HypershuntService {
                     let resp = handle_oidc_login(oidc, &query, is_tls);
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_millis();
-                    state.metrics.dec_active();
                     state.metrics.record(resp.status().as_u16(), elapsed);
                     state.metrics.record_class(
                         crate::metrics::HandlerKind::Oidc,
@@ -513,7 +513,6 @@ impl HypershuntService {
                     .await;
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_millis();
-                    state.metrics.dec_active();
                     state.metrics.record(resp.status().as_u16(), elapsed);
                     state.metrics.record_class(
                         crate::metrics::HandlerKind::Oidc,
@@ -543,7 +542,6 @@ impl HypershuntService {
                         .await;
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_millis();
-                        state.metrics.dec_active();
                         state.metrics.record(resp.status().as_u16(), elapsed);
                         state.metrics.record_class(
                             crate::metrics::HandlerKind::Oidc,
@@ -574,7 +572,6 @@ impl HypershuntService {
                     .await;
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_millis();
-                    state.metrics.dec_active();
                     state.metrics.record(resp.status().as_u16(), elapsed);
                     state.metrics.record_class(
                         crate::metrics::HandlerKind::Oidc,
@@ -609,7 +606,6 @@ impl HypershuntService {
                     );
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_millis();
-                    state.metrics.dec_active();
                     state.metrics.record(resp.status().as_u16(), elapsed);
                     state.metrics.record_class(
                         crate::metrics::HandlerKind::Oidc,
@@ -1328,7 +1324,6 @@ impl HypershuntService {
             let status = resp.status().as_u16();
             let elapsed = start.elapsed();
             let ms = elapsed.as_millis();
-            state.metrics.dec_active();
             state.metrics.record(status, elapsed);
             lmetrics.requests_total
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2168,7 +2163,7 @@ mod tests {
     // in-process TestServer so the access-policy and rate-limit
     // early-return branches are exercised against a real HTTP round
     // trip rather than mocked in isolation.
-    use crate::test::TestServer;
+    use crate::test::{TestBackend, TestServer};
 
     // -- vhost selection across protocols --------------------------
 
@@ -2495,6 +2490,86 @@ mod tests {
         )
         .await;
         assert!(line.contains("200"), "got: {line}");
+    }
+
+    /// Wait for the in-flight gauge to reach `want`.  Polled because
+    /// the gauge moves on the server task, not in step with the
+    /// client's view of the socket.
+    async fn active_reaches(srv: &TestServer, want: i64) -> bool {
+        use std::sync::atomic::Ordering;
+
+        for _ in 0..200 {
+            if srv.metrics.requests_active.load(Ordering::Relaxed) == want {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejected_hostless_request_releases_active_gauge() {
+        // This early return once skipped the decrement, so every
+        // Host-less probe left the gauge one higher for good.
+        let srv = TestServer::start(ONE_LOCATION).await;
+        for _ in 0..3 {
+            let line = raw_status_line(
+                srv.addr,
+                "GET /api/x HTTP/1.1\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+            assert!(line.contains("400"), "got: {line}");
+        }
+        assert!(active_reaches(&srv, 0).await, "gauge leaked");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn served_requests_release_active_gauge() {
+        let srv = TestServer::start(ONE_LOCATION).await;
+        for path in ["/api/x", "/healthz", "/nowhere"] {
+            let req = format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            raw_status_line(srv.addr, &req).await;
+        }
+        assert!(active_reaches(&srv, 0).await, "gauge leaked");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_disconnect_releases_active_gauge() {
+        use tokio::io::AsyncWriteExt;
+
+        // A client that goes away mid-request makes hyper drop the
+        // dispatch future at whatever await it is parked on, so no
+        // code after that point runs.
+        // The proxy handler builds a TLS-capable client even for a
+        // plain-HTTP upstream, which needs a process-wide provider.
+        let _ = rustls::crypto::aws_lc_rs::default_provider()
+            .install_default();
+        let backend = TestBackend::start_hanging().await;
+        let template = format!(
+            r#"
+            listener "tcp://{{addr}}"
+            vhost "localhost" {{
+                location "/" {{
+                    proxy {{ upstream "http://{}" }}
+                }}
+            }}
+            "#,
+            backend.addr,
+        );
+        let srv = TestServer::start(&template).await;
+
+        let mut sock =
+            tokio::net::TcpStream::connect(srv.addr).await.unwrap();
+        sock.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(active_reaches(&srv, 1).await, "request never started");
+
+        drop(sock);
+        assert!(active_reaches(&srv, 0).await, "gauge leaked");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

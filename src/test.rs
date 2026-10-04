@@ -31,6 +31,8 @@ use crate::router::Router;
 /// Sends a graceful shutdown signal when dropped.
 pub(crate) struct TestServer {
     pub addr: SocketAddr,
+    // Shared with the running server so tests can read live gauges.
+    pub metrics: Arc<Metrics>,
     // Dropping the sender broadcasts shutdown to the server task.
     _tx: watch::Sender<bool>,
 }
@@ -80,6 +82,7 @@ impl TestServer {
             ),
             cache: None,
         });
+        let metrics = state.metrics.clone();
         let (tx, rx) = watch::channel(false);
         // Per-listener stop-accept channel; tests never trigger it,
         // so the receiver waits indefinitely.  Tx is retained inside
@@ -120,7 +123,7 @@ impl TestServer {
             tcp_addr
         };
 
-        Self { addr, _tx: tx }
+        Self { addr, metrics, _tx: tx }
     }
 
     /// Start with a pre-built AppState (uses default timeouts).
@@ -141,6 +144,7 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let tokio_listener = TokioTcpListener::from_std(listener).unwrap();
+        let metrics = state.metrics.clone();
         let (tx, rx) = watch::channel(false);
         // Per-listener stop-accept channel; tests never trigger it,
         // so the receiver waits indefinitely.  Tx is retained inside
@@ -171,7 +175,7 @@ impl TestServer {
             rx,
             stop_rx,
         ));
-        Self { addr, _tx: tx }
+        Self { addr, metrics, _tx: tx }
     }
 
     pub async fn get(
