@@ -132,7 +132,6 @@ url           = "2"
 rasn          = "0.28"
 rasn-pkix     = "0.28"
 rasn-ocsp     = "0.28"
-sha1          = "0.11"
 # Hash verifiers for the file-backed Basic-auth back-end
 # (`auth file { path "/etc/hypershunt/htpasswd" }`).  Each crate is
 # narrowly scoped: bcrypt for `$2y$/$2b$`, pwhash for SHA-512 crypt

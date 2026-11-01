@@ -34,7 +34,7 @@ const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /// upstream that elided the Key/Accept round-trip (RFC 8441 section 5.1).
 fn compute_ws_accept(key: &HeaderValue) -> Option<HeaderValue> {
     use base64::Engine as _;
-    use sha1::{Digest, Sha1};
+    use scytale::hash::{Hash as _, sha1::Sha1};
     let key_str = key.to_str().ok()?;
     let mut hasher = Sha1::new();
     hasher.update(key_str.as_bytes());

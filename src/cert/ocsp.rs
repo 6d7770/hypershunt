@@ -40,7 +40,7 @@ use rasn_ocsp::{
 use rasn_pkix::{
     AuthorityInfoAccessSyntax, Certificate, Extension, GeneralName,
 };
-use sha1::{Digest, Sha1};
+use scytale::hash::{Hash as _, sha1::Sha1};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -254,12 +254,7 @@ pub async fn fetch_staple(
 
 /// SHA-1 helper.
 fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h = Sha1::new();
-    h.update(data);
-    let out = h.finalize();
-    let mut a = [0u8; 20];
-    a.copy_from_slice(&out);
-    a
+    Sha1::digest(data)
 }
 
 /// Construct an rasn ObjectIdentifier from a slice of arcs.
