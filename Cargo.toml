@@ -113,9 +113,9 @@ base64             = "0.22"
 ldap3      = { version = "0.12", default-features = false, features = ["sync", "tls-rustls-aws-lc-rs"] }
 maxminddb  = "0.28"
 zeroize    = "1"
-p256       = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
-sha2       = "0.10"
-rand_core  = { version = "0.6", features = ["getrandom"] }
+# ES256 signing, SHA-256 and the CSPRNG.  One pure-Rust crate with
+# two dependencies in place of the p256/sha2/rand_core chain.
+scytale    = "0.10"
 lru        = "0.18"
 # RFC 7231 HTTP-date parsing/formatting for the response cache
 # (Date / Expires / Last-Modified / If-Modified-Since).  Already in
@@ -174,6 +174,11 @@ tempfile          = "3"
 # so the mock must mint RSA-signed ID tokens.  Already in the
 # dependency graph via openidconnect.
 rsa               = { version = "0.9", features = ["sha2"] }
+# The RS256 test IdP above signs with the RustCrypto rsa crate, which
+# speaks digest-0.10 sha2 and rand_core-0.6; production code uses
+# scytale for both.
+sha2              = "0.10"
+rand_core         = { version = "0.6", features = ["getrandom"] }
 time              = "0.3"
 # WebSocket client + server for the proxy upgrade-bridge tests.
 # We only need the protocol + handshake helpers; no TLS features

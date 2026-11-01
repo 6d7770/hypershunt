@@ -19,11 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use base64::Engine as _;
-use p256::ecdsa::signature::{DigestSigner, DigestVerifier};
-use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
-use rand_core::OsRng;
-use sha2::{Digest, Sha256};
+use scytale::hash::{Hash as _, sha2::Sha256};
+use scytale::random::CtrDrbg;
+use scytale::sig::ecdsa::p256::{self, PrivateKey, PublicKey};
 
 use crate::auth::{Authenticator, Identity};
 
@@ -76,8 +74,11 @@ pub struct JwtConfig {
 // -- JwtManager ----------------------------------------------------
 
 pub struct JwtManager {
-    signing_key: SigningKey,
-    verifying_key: VerifyingKey,
+    private_key: PrivateKey,
+    // Hedges each signature's RFC 6979 nonce with fresh randomness.
+    // A DRBG is stateful, hence the lock; signing is a login-time
+    // event, so contention is not a concern.
+    rng: Mutex<CtrDrbg>,
     /// RFC 7638 JWK Thumbprint, used as the `kid` JWT header field.
     pub kid: String,
     config: JwtConfig,
@@ -103,19 +104,23 @@ impl JwtManager {
         })?;
         let key_path = key_dir.join("ec-key.pem");
 
-        let signing_key = if key_path.exists() {
-            let pem = std::fs::read_to_string(&key_path).map_err(|e| {
+        let mut rng = CtrDrbg::from_system()
+            .map_err(|e| anyhow!("seeding jwt random generator: {e}"))?;
+        let private_key = if key_path.exists() {
+            let pem = std::fs::read(&key_path).map_err(|e| {
                 anyhow!("reading jwt key {}: {e}", key_path.display())
             })?;
-            SigningKey::from_pkcs8_pem(&pem).map_err(|e| {
+            PrivateKey::try_from_pem(&pem).map_err(|e| {
                 anyhow!("parsing jwt key {}: {e}", key_path.display())
             })?
         } else {
-            let key = SigningKey::random(&mut OsRng);
-            let pem = key
-                .to_pkcs8_pem(LineEnding::LF)
+            let key = PrivateKey::generate(&mut rng)
+                .map_err(|e| anyhow!("generating jwt key: {e}"))?;
+            let mut pem = [0u8; p256::PEM_SIZE];
+            let n = key
+                .pem_bytes(&mut pem)
                 .map_err(|e| anyhow!("encoding jwt key: {e}"))?;
-            write_private_file(&key_path, pem.as_bytes()).map_err(|e| {
+            write_private_file(&key_path, &pem[..n]).map_err(|e| {
                 anyhow!("writing jwt key {}: {e}", key_path.display())
             })?;
             tracing::info!(
@@ -125,14 +130,13 @@ impl JwtManager {
             key
         };
 
-        let verifying_key = *signing_key.verifying_key();
-        let kid = compute_kid(&verifying_key);
+        let kid = compute_kid(private_key.public_key());
         let cache = Mutex::new(lru::LruCache::new(
             NonZeroUsize::new(JWT_CACHE_CAPACITY).unwrap(),
         ));
         Ok(Self {
-            signing_key,
-            verifying_key,
+            private_key,
+            rng: Mutex::new(rng),
             kid,
             config,
             inner,
@@ -159,7 +163,7 @@ impl JwtManager {
     }
 
     fn validate_token(&self, token: &str) -> JwtResult {
-        let key: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        let key = Sha256::digest(token.as_bytes());
         let now = match now_secs() {
             Some(t) => t,
             None => return JwtResult::Invalid,
@@ -211,13 +215,17 @@ impl JwtManager {
             Ok(b) => b,
             Err(_) => return JwtResult::Invalid,
         };
-        let sig = match Signature::from_slice(&sig_bytes) {
+        let sig: [u8; p256::SIGNATURE_SIZE] = match sig_bytes.try_into() {
             Ok(s) => s,
             Err(_) => return JwtResult::Invalid,
         };
         let signed_input = format!("{header_b64}.{payload_b64}");
-        let digest = Sha256::new_with_prefix(signed_input.as_bytes());
-        if self.verifying_key.verify_digest(digest, &sig).is_err() {
+        if self
+            .private_key
+            .public_key()
+            .verify::<Sha256>(signed_input.as_bytes(), &sig)
+            .is_err()
+        {
             tracing::debug!("signature verification failed");
             return JwtResult::Invalid;
         }
@@ -293,9 +301,15 @@ impl JwtManager {
         let p = B64.encode(serde_json::to_string(&payload)?);
         let signed_input = format!("{h}.{p}");
 
-        let digest = Sha256::new_with_prefix(signed_input.as_bytes());
-        let sig: Signature = self.signing_key.sign_digest(digest);
-        let s = B64.encode(sig.to_bytes());
+        // A poisoned lock only means another signer panicked
+        // mid-call; the generator's state is still sound to use.
+        let sig = {
+            let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+            self.private_key
+                .sign::<Sha256, _>(&mut *rng, signed_input.as_bytes())
+                .map_err(|e| anyhow!("signing jwt: {e}"))?
+        };
+        let s = B64.encode(sig);
 
         Ok(format!("{signed_input}.{s}"))
     }
@@ -320,9 +334,7 @@ impl JwtManager {
 
     /// Return the JWKS JSON document exposing the public key.
     pub fn jwks_json(&self) -> String {
-        let ep = self.verifying_key.to_encoded_point(false);
-        let x = B64.encode(ep.x().expect("uncompressed point has x"));
-        let y = B64.encode(ep.y().expect("uncompressed point has y"));
+        let (x, y) = jwk_coordinates(self.private_key.public_key());
         serde_json::to_string(&serde_json::json!({
             "keys": [{
                 "kty": "EC",
@@ -382,15 +394,21 @@ fn extract_token(
 /// Compute the RFC 7638 JWK Thumbprint for a P-256 public key.
 /// This is the base64url-encoded SHA-256 of the canonical JSON
 /// containing only the required members in alphabetical order.
-fn compute_kid(key: &VerifyingKey) -> String {
-    let ep = key.to_encoded_point(false);
-    let x = B64.encode(ep.x().expect("uncompressed point has x"));
-    let y = B64.encode(ep.y().expect("uncompressed point has y"));
+fn compute_kid(key: &PublicKey) -> String {
+    let (x, y) = jwk_coordinates(key);
     // Members must be in alphabetical order (RFC 7638 s.3).
     let thumbprint_input =
         format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
     let hash = Sha256::digest(thumbprint_input.as_bytes());
     B64.encode(hash)
+}
+
+/// The base64url `x` and `y` JWK members of a P-256 public key,
+/// split out of its uncompressed SEC 1 encoding (`0x04 || x || y`).
+fn jwk_coordinates(key: &PublicKey) -> (String, String) {
+    let sec1 = key.sec1_bytes();
+    let (x, y) = sec1[1..].split_at(p256::KEY_SIZE);
+    (B64.encode(x), B64.encode(y))
 }
 
 fn now_secs() -> Option<u64> {
@@ -470,6 +488,57 @@ mod tests {
         };
         assert_eq!(got.username, "alice");
         assert_eq!(got.groups, vec!["admins"]);
+    }
+
+    /// A P-256 key as OpenSSL writes it (`openssl genpkey -algorithm
+    /// EC`), which is also the PKCS#8 form earlier hypershunt
+    /// versions persisted at `jwt/ec-key.pem`; the matching public
+    /// key from `openssl pkey -pubout`.
+    const OPENSSL_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgB/aOoz3xdXpnb+Lo\n\
+        CU2H3nmI++86daKltGQhtGxvZx2hRANCAASBCk2N7Q+ISt+ES+2Y41DC8Mda5nLA\n\
+        pWG6nFqW9J5Xjltl1H7ZhXux5qvmVTkhr97/ckCgUuHfO9Kqc5hs9EPl\n\
+        -----END PRIVATE KEY-----\n";
+    const OPENSSL_PUBLIC_PEM: &[u8] = b"-----BEGIN PUBLIC KEY-----\n\
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgQpNje0PiErfhEvtmONQwvDHWuZy\n\
+        wKVhupxalvSeV45bZdR+2YV7sear5lU5Ia/e/3JAoFLh3zvSqnOYbPRD5Q==\n\
+        -----END PUBLIC KEY-----\n";
+
+    #[test]
+    fn existing_pkcs8_key_file_is_loaded_not_replaced() {
+        // An upgrade must keep the deployment's key: tokens issued by
+        // the previous binary stay valid and the JWKS does not change
+        // under clients that cached it.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("jwt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ec-key.pem");
+        std::fs::write(&path, OPENSSL_PEM).unwrap();
+
+        let mgr = test_manager(&tmp);
+        let expected = PublicKey::try_from_pem(OPENSSL_PUBLIC_PEM).unwrap();
+        assert_eq!(
+            mgr.private_key.public_key().sec1_bytes(),
+            expected.sec1_bytes(),
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), OPENSSL_PEM);
+
+        // And it signs: a token from the loaded key validates.
+        let token = mgr.issue(&identity("carol")).unwrap();
+        assert!(matches!(mgr.validate_token(&token), JwtResult::Valid(_)));
+    }
+
+    #[test]
+    fn generated_key_survives_restart() {
+        let tmp = TempDir::new().unwrap();
+        let first = test_manager(&tmp);
+        let token = first.issue(&identity("dave")).unwrap();
+        let kid = first.kid.clone();
+        drop(first);
+
+        let second = test_manager(&tmp);
+        assert_eq!(second.kid, kid);
+        assert!(matches!(second.validate_token(&token), JwtResult::Valid(_)));
     }
 
     #[test]
@@ -582,7 +651,7 @@ mod tests {
         assert_eq!(x.len(), 32);
         assert_eq!(y.len(), 32);
         // kid matches compute_kid.
-        let expected_kid = compute_kid(&mgr.verifying_key);
+        let expected_kid = compute_kid(mgr.private_key.public_key());
         assert_eq!(key["kid"].as_str().unwrap(), expected_kid);
     }
 
