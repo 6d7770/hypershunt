@@ -72,7 +72,6 @@ rustls             = { version = "0.23", default-features = false, features = ["
 quinn              = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 h3                 = "0.0.8"
 h3-quinn           = "0.0.10"
-rustls-pemfile     = "2"
 tokio-rustls       = "0.26"
 rcgen              = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 instant-acme       = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }

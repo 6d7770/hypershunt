@@ -22,7 +22,7 @@
 // first start the key is lifted out of that file; the file itself is
 // left in place so a downgrade keeps working.
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use instant_acme::{Account, AccountCredentials, Key};
@@ -225,11 +225,10 @@ fn pem_from_pkcs8_der(der: &[u8]) -> String {
 
 /// Extract PKCS#8 DER from a PEM file holding exactly one private key.
 fn pkcs8_der_from_pem(pem: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let mut reader = std::io::Cursor::new(pem);
-    match rustls_pemfile::private_key(&mut reader)? {
-        Some(PrivateKeyDer::Pkcs8(k)) => Ok(k.secret_pkcs8_der().to_vec()),
-        Some(_) => bail!("expected a PKCS#8 PRIVATE KEY block"),
-        None => Err(anyhow!("no private key found")),
+    use rustls::pki_types::pem::PemObject as _;
+    match PrivateKeyDer::from_pem_slice(pem)? {
+        PrivateKeyDer::Pkcs8(k) => Ok(k.secret_pkcs8_der().to_vec()),
+        _ => bail!("expected a PKCS#8 PRIVATE KEY block"),
     }
 }
 
