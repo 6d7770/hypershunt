@@ -36,6 +36,8 @@ pub use socket::{BoundSocket, LocalAddr, LocalUnixPath, bind_socket};
 pub use socket::bind_tcp_socket;
 #[allow(unused_imports)]
 pub(crate) use socket::{IncomingStream, PeerAddr, apply_proxy_proto};
+#[cfg(unix)]
+pub(crate) use socket::register_owned_fd;
 
 // Maximum time to wait for in-flight requests to finish after the
 // shutdown signal is sent before giving up and exiting anyway.

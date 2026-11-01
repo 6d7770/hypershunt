@@ -101,7 +101,7 @@ brotli             = "8"
 # zstd response compression.  Modern browsers negotiate `zstd` on
 # Accept-Encoding (Chrome 123+, Firefox 126+, Safari 17.4+) and it
 # typically beats gzip on size at similar CPU.
-zstd               = "0.13"
+zstd               = "0.14"
 ipnet              = "2"
 hyper-rustls       = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio", "http1", "tls12"] }
 webpki-roots       = "1"

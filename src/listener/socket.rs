@@ -218,6 +218,23 @@ pub(crate) fn clear_cloexec<Fd: std::os::fd::AsFd>(
     Ok(())
 }
 
+/// Hand an owned descriptor to the tokio reactor.
+///
+/// tokio 1.54 deprecated `AsyncFd::new`: an arbitrary `AsRawFd` cannot
+/// promise its descriptor stays open and unchanged, so registration
+/// became `unsafe`.  An `OwnedFd` does make that promise, which is
+/// what lets every caller here stay sound without its own `unsafe`.
+#[cfg(unix)]
+pub(crate) fn register_owned_fd(
+    fd: std::os::fd::OwnedFd,
+) -> std::io::Result<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>> {
+    // SAFETY: an OwnedFd is a valid, open descriptor for its whole
+    // lifetime, is closed only on drop, and always reports the same
+    // raw fd.
+    unsafe { tokio::io::unix::AsyncFd::register(fd) }
+        .map_err(std::io::Error::from)
+}
+
 /// Bind a listener socket for the given config entry.  Called before
 /// privilege drop so ports < 1024 can be bound as root.
 ///
@@ -322,9 +339,7 @@ pub fn bind_socket(
             let owned: OwnedFd = fd;
             clear_cloexec(&owned)
                 .context("clearing FD_CLOEXEC on unix-seqpacket socket")?;
-            Ok(BoundSocket::UnixSeqpacket(
-                tokio::io::unix::AsyncFd::new(owned)?,
-            ))
+            Ok(BoundSocket::UnixSeqpacket(register_owned_fd(owned)?))
         }
         (kind, loc) => Err(anyhow!(
             "bind_socket: unsupported (kind, location) combination \
