@@ -168,16 +168,6 @@ pam-client2 = "0.5"
 # after a cert rotation instead of busy-looping.
 tokio             = { version = "1",    features = ["full", "test-util"] }
 tempfile          = "3"
-# RS256 signing for the in-process mock IdP in the OIDC tests; the
-# production verifier (openidconnect's default) only accepts RS256,
-# so the mock must mint RSA-signed ID tokens.  Already in the
-# dependency graph via openidconnect.
-rsa               = { version = "0.9", features = ["sha2"] }
-# The RS256 test IdP above signs with the RustCrypto rsa crate, which
-# speaks digest-0.10 sha2 and rand_core-0.6; production code uses
-# scytale for both.
-sha2              = "0.10"
-rand_core         = { version = "0.6", features = ["getrandom"] }
 time              = "0.3"
 # WebSocket client + server for the proxy upgrade-bridge tests.
 # We only need the protocol + handshake helpers; no TLS features
