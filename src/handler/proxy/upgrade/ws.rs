@@ -22,6 +22,7 @@
 // offset across chunk boundaries.
 
 use bytes::BytesMut;
+use scytale::random::CtrDrbg;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -152,13 +153,14 @@ pub(crate) fn emit_header(
 }
 
 /// Generate a fresh 4-byte masking key.  RFC 6455 §5.3 requires the
-/// key be unpredictable; we draw from the OS CSPRNG (same source the
-/// JWT signer uses).
-fn random_mask() -> [u8; 4] {
-    use rand_core::{OsRng, RngCore};
+/// key be unpredictable, so it comes from a CSPRNG rather than a
+/// counter; one generator per connection avoids reseeding from the
+/// OS on every frame.
+fn random_mask(rng: &mut CtrDrbg) -> io::Result<[u8; 4]> {
+    use scytale::Random as _;
     let mut k = [0u8; 4];
-    OsRng.fill_bytes(&mut k);
-    k
+    rng.fill(&mut k).map_err(io::Error::other)?;
+    Ok(k)
 }
 
 /// Internal frame-streaming state machine.
@@ -192,6 +194,12 @@ where
     let mut acc = BytesMut::with_capacity(16 * 1024);
     let mut read_buf = vec![0u8; 64 * 1024];
     let mut state = State::Header;
+    let mut rng = match mode {
+        MaskMode::Mask => {
+            Some(CtrDrbg::from_system().map_err(io::Error::other)?)
+        }
+        MaskMode::Unmask => None,
+    };
 
     loop {
         match &mut state {
@@ -201,9 +209,9 @@ where
                     // inbound key comes from the parsed header.  XORing
                     // by (in_key XOR out_key) per position both removes
                     // the inbound mask and applies the outbound one.
-                    let out_key = match mode {
-                        MaskMode::Mask => Some(random_mask()),
-                        MaskMode::Unmask => None,
+                    let out_key = match rng.as_mut() {
+                        Some(rng) => Some(random_mask(rng)?),
+                        None => None,
                     };
                     let in_key =
                         if h.masked { Some(h.mask_key) } else { None };

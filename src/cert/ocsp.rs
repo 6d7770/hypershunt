@@ -288,10 +288,8 @@ fn staple_cache_path(
     state_dir: &std::path::Path,
     leaf_der: &[u8],
 ) -> PathBuf {
-    use sha2::{Digest as _, Sha256};
-    let mut h = Sha256::new();
-    h.update(leaf_der);
-    let digest = h.finalize();
+    use scytale::hash::{Hash as _, sha2::Sha256};
+    let digest = Sha256::digest(leaf_der);
     let mut name = String::with_capacity(64 + 4);
     for b in digest.iter() {
         use std::fmt::Write as _;

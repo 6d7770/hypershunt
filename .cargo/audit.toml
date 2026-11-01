@@ -1,0 +1,16 @@
+# cargo-audit policy.  Every entry here must say why the advisory
+# cannot reach a running hypershunt; remove it the moment that stops
+# being true.
+
+[advisories]
+ignore = [
+    # Marvin attack on the rsa crate: private-key operations leak key
+    # bits through timing.  No patched release exists.  rsa reaches us
+    # only through openidconnect, which uses it to verify the IdP's
+    # RS256/PS256 signatures, a public-key operation outside the leak.
+    # hypershunt holds no RSA private key: its own tokens are ES256 and
+    # it authenticates to the IdP with a client secret.  The mock IdP in
+    # the test suite does sign with rsa, but that is a dev-dependency.
+    # Tracked for removal in issue #105.
+    "RUSTSEC-2023-0071",
+]

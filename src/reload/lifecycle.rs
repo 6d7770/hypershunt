@@ -197,7 +197,6 @@ async fn perform_upgrade(state: &UpgradeState) -> anyhow::Result<()> {
 pub(crate) async fn read_one_byte(
     fd: std::os::fd::RawFd,
 ) -> std::io::Result<()> {
-    use tokio::io::unix::AsyncFd;
     // Make the fd non-blocking so AsyncFd's readable() works.
     let flags = nix::fcntl::fcntl(
         unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) },
@@ -218,7 +217,7 @@ pub(crate) async fn read_one_byte(
     // after the await.
     use std::os::fd::FromRawFd;
     let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-    let async_fd = AsyncFd::new(owned)?;
+    let async_fd = crate::listener::register_owned_fd(owned)?;
     loop {
         let mut guard = async_fd.readable().await?;
         let mut buf = [0u8; 1];

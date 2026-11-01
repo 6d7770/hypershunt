@@ -313,7 +313,7 @@ async fn seqpacket_per_conn(
     proxy: crate::config::ProxyConfig,
     metrics: Arc<Metrics>,
 ) {
-    let client = match tokio::io::unix::AsyncFd::new(client_fd) {
+    let client = match crate::listener::register_owned_fd(client_fd) {
         Ok(f) => Arc::new(f),
         Err(e) => {
             tracing::warn!(
@@ -600,7 +600,7 @@ async fn build_upstream(
             fcntl(&fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
                 .context("setting O_NONBLOCK on unix-seqpacket upstream")?;
             let owned: OwnedFd = fd;
-            let async_fd = tokio::io::unix::AsyncFd::new(owned)
+            let async_fd = crate::listener::register_owned_fd(owned)
                 .context("registering unix-seqpacket upstream with reactor")?;
             Ok(UpstreamSocket::UnixSeqpacket(Arc::new(async_fd)))
         }

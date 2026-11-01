@@ -9,7 +9,7 @@ use super::{
 };
 use crate::auth::Identity;
 use anyhow::{Context, Result, anyhow, bail};
-use sha2::{Digest, Sha256};
+use scytale::hash::{Hash as _, sha2::Sha256};
 use std::time::SystemTime;
 
 impl OidcProvider {
@@ -32,7 +32,7 @@ impl OidcProvider {
             .as_secs();
 
         // Fast path: cached identity if still within token validity.
-        let key: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        let key = Sha256::digest(token.as_bytes());
         {
             let mut cache =
                 self.bearer_cache.lock().expect("oidc bearer cache mutex");
