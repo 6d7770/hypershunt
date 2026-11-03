@@ -80,7 +80,8 @@ pub fn build_upstream_tls(
 fn load_ca_bundle(path: &str) -> anyhow::Result<rustls::RootCertStore> {
     let pem = std::fs::read(path)
         .with_context(|| format!("reading tls ca-file {path:?}"))?;
-    let certs = rustls_pemfile::certs(&mut pem.as_slice())
+    use rustls::pki_types::pem::PemObject as _;
+    let certs = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| format!("parsing tls ca-file {path:?}"))?;
     let mut roots = rustls::RootCertStore::empty();

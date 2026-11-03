@@ -15,7 +15,7 @@ use rustls::pki_types::{
 };
 use rustls::server::WebPkiClientVerifier;
 use rustls::server::danger::ClientCertVerifier;
-use rustls_pemfile::{certs, crls, private_key};
+use rustls::pki_types::pem::PemObject as _;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -212,11 +212,12 @@ pub fn build_client_verifier(
         let mut rd = BufReader::new(File::open(ca_path).with_context(
             || format!("opening mtls CA file {ca_path}"),
         )?);
-        let parsed: Vec<CertificateDer<'static>> = certs(&mut rd)
-            .collect::<Result<_, _>>()
-            .with_context(|| {
-                format!("reading mtls CA certificates from {ca_path}")
-            })?;
+        let parsed: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_reader_iter(&mut rd)
+                .collect::<Result<_, _>>()
+                .with_context(|| {
+                    format!("reading mtls CA certificates from {ca_path}")
+                })?;
         if parsed.is_empty() {
             anyhow::bail!(
                 "no CA certificates found in mtls CA file {ca_path}"
@@ -257,7 +258,7 @@ pub fn load_crls(
             format!("opening mtls revocation file {p}")
         })?);
         let mut got = 0;
-        for crl in crls(&mut rd) {
+        for crl in CertificateRevocationListDer::pem_reader_iter(&mut rd) {
             out.push(crl.with_context(|| {
                 format!("reading CRL entries from {p}")
             })?);
@@ -623,9 +624,11 @@ pub fn load_cert_and_key(
     key_path: &Path,
 ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     let cert_chain: Vec<CertificateDer<'static>> =
-        certs(&mut BufReader::new(File::open(cert_path).with_context(
-            || format!("opening cert file {}", cert_path.display()),
-        )?))
+        CertificateDer::pem_reader_iter(BufReader::new(
+            File::open(cert_path).with_context(|| {
+                format!("opening cert file {}", cert_path.display())
+            })?,
+        ))
         .collect::<Result<_, _>>()
         .context("reading certificate PEM")?;
 
@@ -633,14 +636,14 @@ pub fn load_cert_and_key(
         anyhow::bail!("no certificates found in {}", cert_path.display());
     }
 
-    let key =
-        private_key(&mut BufReader::new(File::open(key_path).with_context(
-            || format!("opening key file {}", key_path.display()),
-        )?))
-        .context("reading private key PEM")?
-        .with_context(|| {
-            format!("no private key found in {}", key_path.display())
-        })?;
+    let key = PrivateKeyDer::from_pem_reader(BufReader::new(
+        File::open(key_path).with_context(|| {
+            format!("opening key file {}", key_path.display())
+        })?,
+    ))
+    .with_context(|| {
+        format!("reading private key PEM from {}", key_path.display())
+    })?;
 
     Ok((cert_chain, key))
 }

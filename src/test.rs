@@ -453,15 +453,15 @@ pub(crate) mod certs {
 
         /// rustls server config presenting the leaf.
         pub(crate) fn server_config(&self) -> Arc<rustls::ServerConfig> {
-            let certs = rustls_pemfile::certs(
-                &mut self.leaf_cert_pem.as_bytes(),
+            use rustls::pki_types::pem::PemObject as _;
+            let certs = rustls::pki_types::CertificateDer::pem_slice_iter(
+                self.leaf_cert_pem.as_bytes(),
             )
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-            let key = rustls_pemfile::private_key(
-                &mut self.leaf_key_pem.as_bytes(),
+            let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(
+                self.leaf_key_pem.as_bytes(),
             )
-            .unwrap()
             .unwrap();
             Arc::new(
                 rustls::ServerConfig::builder()

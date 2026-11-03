@@ -1152,10 +1152,10 @@ impl OidcProvider {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    // `Digest` brings the `Sha256::digest` associated fn into scope
+    // `Hash` brings the `Sha256::digest` associated fn into scope
     // for the bearer-token cache-key tests; `Sha256` itself is
     // referenced fully-qualified there.
-    use sha2::Digest;
+    use scytale::hash::Hash as _;
     use std::time::SystemTime;
 
     // ---- Server-less discovery tests ----------------------------------
@@ -1504,7 +1504,6 @@ pub(crate) mod tests {
         pub(crate) async fn spawn() -> MockIdp {
             use base64::Engine as _;
             use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-            use rsa::traits::PublicKeyParts as _;
 
             let listener =
                 tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1516,28 +1515,34 @@ pub(crate) mod tests {
             // RS256: the only algorithm openidconnect's default
             // id_token_verifier accepts.  Keygen is slow, so share
             // one key across all tests in the process.
-            static RSA_KEY: std::sync::OnceLock<rsa::RsaPrivateKey> =
-                std::sync::OnceLock::new();
-            let private = RSA_KEY
+            static RSA_KEY: std::sync::OnceLock<
+                Arc<scytale::sig::rsa::PrivateKey>,
+            > = std::sync::OnceLock::new();
+            let signing_key = RSA_KEY
                 .get_or_init(|| {
-                    rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048)
-                        .unwrap()
+                    let mut rng =
+                        scytale::random::CtrDrbg::from_system().unwrap();
+                    Arc::new(
+                        scytale::sig::rsa::PrivateKey::generate(
+                            &mut rng, 2048,
+                        )
+                        .unwrap(),
+                    )
                 })
                 .clone();
-            let signing_key = Arc::new(
-                rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
-                    private.clone(),
-                ),
-            );
-            let public = private.to_public_key();
+            let public = signing_key.public_key();
+            let mut n = vec![0u8; public.modulus_len()];
+            let n_len = public.modulus_bytes(&mut n).unwrap();
+            n.truncate(n_len);
+            // JWK integers are minimal big-endian: no leading zeros.
+            let e = public.exponent_bytes();
+            let e = &e[e.iter().position(|&b| b != 0).unwrap_or(7)..];
             let jwks = serde_json::json!({
                 "keys": [{
                     "kty": "RSA", "alg": "RS256",
                     "use": "sig", "kid": "test-key",
-                    "n": URL_SAFE_NO_PAD
-                        .encode(public.n().to_bytes_be()),
-                    "e": URL_SAFE_NO_PAD
-                        .encode(public.e().to_bytes_be()),
+                    "n": URL_SAFE_NO_PAD.encode(&n),
+                    "e": URL_SAFE_NO_PAD.encode(e),
                 }]
             })
             .to_string();
@@ -1650,10 +1655,7 @@ pub(crate) mod tests {
                                             }
                                             use base64::Engine as _;
                                             use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-                                            use rsa::signature::{
-                                                SignatureEncoding as _,
-                                                Signer as _,
-                                            };
+                                            use scytale::hash::sha2::Sha256;
                                             let header = URL_SAFE_NO_PAD.encode(
                                                 br#"{"alg":"RS256","kid":"test-key"}"#,
                                             );
@@ -1662,11 +1664,13 @@ pub(crate) mod tests {
                                             let signing_input =
                                                 format!("{header}.{payload}");
                                             let sig = key
-                                                .sign(signing_input.as_bytes());
+                                                .sign_pkcs1::<Sha256>(
+                                                    signing_input.as_bytes(),
+                                                )
+                                                .unwrap();
                                             let id_token = format!(
                                                 "{signing_input}.{}",
-                                                URL_SAFE_NO_PAD
-                                                    .encode(sig.to_bytes())
+                                                URL_SAFE_NO_PAD.encode(&sig)
                                             );
                                             let mut resp = serde_json::json!({
                                                 "access_token":
@@ -2038,7 +2042,8 @@ pub(crate) mod tests {
         // hashes to the same key works).
         let p = provider_for_store(Duration::from_secs(60));
         let token = "anything";
-        let key: [u8; 32] = sha2::Sha256::digest(token.as_bytes()).into();
+        let key: [u8; 32] =
+            scytale::hash::sha2::Sha256::digest(token.as_bytes());
         let id = Identity {
             username: "alice".into(),
             groups: vec!["devs".into()],
@@ -2064,7 +2069,8 @@ pub(crate) mod tests {
     fn bearer_cache_evicts_expired_entry_on_lookup() {
         let p = provider_for_store(Duration::from_secs(60));
         let token = "anything";
-        let key: [u8; 32] = sha2::Sha256::digest(token.as_bytes()).into();
+        let key: [u8; 32] =
+            scytale::hash::sha2::Sha256::digest(token.as_bytes());
         p.bearer_cache.lock().expect("oidc bearer cache mutex").put(
             key,
             BearerCacheEntry {

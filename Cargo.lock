@@ -1404,20 +1404,15 @@ dependencies = [
  "pam-client2",
  "pwhash",
  "quinn",
- "rand_core 0.6.4",
  "rasn",
  "rasn-ocsp",
  "rasn-pkix",
  "rcgen",
  "regex",
- "rsa",
  "rustls",
- "rustls-pemfile",
  "scytale",
  "serde",
  "serde_json",
- "sha1 0.11.0",
- "sha2 0.10.9",
  "tempfile",
  "time",
  "tokio",
@@ -2930,7 +2925,6 @@ dependencies = [
  "pkcs1",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
- "sha2 0.10.9",
  "signature 2.2.0",
  "spki 0.7.3",
  "subtle",
@@ -3010,15 +3004,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
@@ -3333,17 +3318,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
-]
-
-[[package]]
-name = "sha1"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.1",
- "digest 0.11.3",
 ]
 
 [[package]]
@@ -3915,7 +3889,7 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
- "sha1 0.10.7",
+ "sha1",
  "thiserror 2.0.21",
 ]
 
