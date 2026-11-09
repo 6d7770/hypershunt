@@ -624,16 +624,102 @@ fn verify_password(password: &str, hash: &str) -> bool {
         // panic the worker.
         pwhash::sha512_crypt::verify(password, hash)
     } else if hash.starts_with("$argon2id$") {
-        use argon2::password_hash::{PasswordHash, PasswordVerifier};
-        let Ok(parsed) = PasswordHash::new(hash) else {
-            return false;
-        };
-        argon2::Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok()
+        verify_argon2id(password, hash)
     } else {
         false
     }
+}
+
+/// An Argon2id verifier in the PHC string format:
+/// `$argon2id$v=19$m=<KiB>,t=<passes>,p=<lanes>$<salt>$<tag>`,
+/// salt and tag in unpadded base64.
+struct Argon2idHash {
+    params: scytale::kdf::argon2::Params,
+    salt: Vec<u8>,
+    tag: Vec<u8>,
+}
+
+impl Argon2idHash {
+    /// `None` for anything but the exact form above.  Strictness is
+    /// deliberate: an entry read loosely could verify against inputs
+    /// other than the ones the operator hashed.  That rules out the
+    /// optional `keyid`/`data` parameters and the pre-1.3 hashes
+    /// that carry no `v=` field, neither of which the tools that
+    /// write htpasswd files produce.
+    fn parse(hash: &str) -> Option<Self> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD_NO_PAD;
+
+        let mut fields = hash.strip_prefix("$argon2id$")?.split('$');
+        if fields.next()? != "v=19" {
+            return None;
+        }
+        let mut costs = fields.next()?.split(',');
+        let memory_kib = phc_cost(costs.next()?, "m=")?;
+        let passes = phc_cost(costs.next()?, "t=")?;
+        let lanes = phc_cost(costs.next()?, "p=")?;
+        if costs.next().is_some() {
+            return None;
+        }
+        let salt = b64.decode(fields.next()?).ok()?;
+        let tag = b64.decode(fields.next()?).ok()?;
+        if fields.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            params: scytale::kdf::argon2::Params {
+                passes,
+                memory_kib,
+                lanes,
+            },
+            salt,
+            tag,
+        })
+    }
+
+    fn verify(&self, password: &[u8]) -> bool {
+        use scytale::kdf::argon2::{self, Block};
+
+        // The working memory is ours to supply, and its size comes
+        // from the file.  Allocate fallibly so that an entry asking
+        // for more than the machine has fails that one login instead
+        // of aborting the server.
+        let Ok(blocks) = usize::try_from(self.params.memory_kib) else {
+            return false;
+        };
+        let mut work = Vec::new();
+        if work.try_reserve_exact(blocks).is_err() {
+            return false;
+        }
+        work.resize(blocks, Block::ZERO);
+        // Out-of-range costs (too little memory, a short salt...)
+        // come back as errors, so a bad entry simply never matches.
+        argon2::verify(
+            password,
+            &self.salt,
+            &[],
+            &[],
+            self.params,
+            &mut work,
+            &self.tag,
+        )
+        .is_ok()
+    }
+}
+
+/// One `<name>=<decimal>` cost of a PHC parameter field.
+fn phc_cost(field: &str, name: &str) -> Option<u32> {
+    let digits = field.strip_prefix(name)?;
+    // `u32::from_str` alone would also take a leading `+`.
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn verify_argon2id(password: &str, hash: &str) -> bool {
+    Argon2idHash::parse(hash)
+        .is_some_and(|parsed| parsed.verify(password.as_bytes()))
 }
 
 // -- PAM -----------------------------------------------------------
@@ -1160,6 +1246,58 @@ mod tests {
     fn verify_argon2id_ok_and_wrong() {
         assert!(verify_password("secret", ARGON2_SECRET));
         assert!(!verify_password("nope", ARGON2_SECRET));
+    }
+
+    #[test]
+    fn argon2id_parse_reads_costs_salt_and_tag() {
+        let parsed = Argon2idHash::parse(ARGON2_SECRET).unwrap();
+        assert_eq!(parsed.params.memory_kib, 19456);
+        assert_eq!(parsed.params.passes, 2);
+        assert_eq!(parsed.params.lanes, 1);
+        assert_eq!(parsed.salt, b"saltsaltsalt");
+        assert_eq!(parsed.tag.len(), 32);
+    }
+
+    #[test]
+    fn argon2id_rejects_malformed_strings() {
+        const SALT: &str = "c2FsdHNhbHRzYWx0";
+        const TAG: &str = "ki2QQIMdi3gALFf4XR64Y9rn4F8+JEUu2h0iBExveQo";
+        let bad = [
+            // No version field (pre-1.3), and a version we lack.
+            format!("$argon2id$m=19456,t=2,p=1${SALT}${TAG}"),
+            format!("$argon2id$v=16$m=19456,t=2,p=1${SALT}${TAG}"),
+            // Costs out of order, missing, signed, or with extras.
+            format!("$argon2id$v=19$t=2,m=19456,p=1${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=+19456,t=2,p=1${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=1,data=AAAA${SALT}${TAG}"),
+            // Padded or non-base64 salt, missing tag, trailing field.
+            format!("$argon2id$v=19$m=19456,t=2,p=1${SALT}==${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=1$!!!${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=1${SALT}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=1${SALT}${TAG}$x"),
+        ];
+        for hash in &bad {
+            assert!(Argon2idHash::parse(hash).is_none(), "{hash}");
+            assert!(!verify_password("secret", hash), "{hash}");
+        }
+    }
+
+    #[test]
+    fn argon2id_out_of_range_costs_fail_closed() {
+        const SALT: &str = "c2FsdHNhbHRzYWx0";
+        const TAG: &str = "ki2QQIMdi3gALFf4XR64Y9rn4F8+JEUu2h0iBExveQo";
+        // Well-formed strings whose costs the KDF refuses: no
+        // passes, no lanes, under eight blocks a lane, short salt.
+        let bad = [
+            format!("$argon2id$v=19$m=19456,t=0,p=1${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=0${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=4,t=2,p=1${SALT}${TAG}"),
+            format!("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA${TAG}"),
+        ];
+        for hash in &bad {
+            assert!(!verify_password("secret", hash), "{hash}");
+        }
     }
 
     #[test]

@@ -1515,6 +1515,14 @@ Generate hashes with:
   -6 pass`
 - Argon2id: `argon2 saltbytes -id -e <<< pass`
 
+Argon2id entries must be version 19 hashes in the standard encoded
+form, `$argon2id$v=19$m=...,t=...,p=...$salt$hash`, which is what
+current tools write.  An entry with no `v=` field or with `v=16`
+(Argon2 1.0), with the cost parameters in another order, or with
+the optional `keyid`/`data` parameters is not rejected when the
+file is read, but it never matches a password.  Rehash such an
+entry with a current tool.
+
 ### Group-based access
 
 Append `:group1,group2,...` to the line and gate on the group

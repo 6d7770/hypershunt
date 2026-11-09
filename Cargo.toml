@@ -114,7 +114,7 @@ maxminddb  = "0.28"
 zeroize    = "1"
 # ES256 signing, SHA-256 and the CSPRNG.  One pure-Rust crate with
 # two dependencies in place of the p256/sha2/rand_core chain.
-scytale    = "0.10"
+scytale    = "0.10.2"
 lru        = "0.18"
 # RFC 7231 HTTP-date parsing/formatting for the response cache
 # (Date / Expires / Last-Modified / If-Modified-Since).  Already in
@@ -134,11 +134,11 @@ rasn-ocsp     = "0.28"
 # Hash verifiers for the file-backed Basic-auth back-end
 # (`auth file { path "/etc/hypershunt/htpasswd" }`).  Each crate is
 # narrowly scoped: bcrypt for `$2y$/$2b$`, pwhash for SHA-512 crypt
-# (`$6$`), argon2 for `$argon2id$`.  Other schemes (DES, MD5-crypt,
-# plain) are rejected at parse time -- see src/auth.rs.
+# (`$6$`).  Argon2id (`$argon2id$`) needs no crate of its own: it is
+# scytale's `kdf::argon2`.  Other schemes (DES, MD5-crypt, plain) are
+# rejected at parse time -- see src/auth.rs.
 bcrypt        = "0.19"
 pwhash        = "1"
-argon2        = "0.5"
 # chrono is already a transitive dep of `rasn` (its GeneralizedTime
 # is a chrono::DateTime alias).  Name it directly here so src/ocsp.rs
 # can translate the GeneralizedTime into a std::time::SystemTime.
