@@ -612,6 +612,11 @@ hash schemes are bcrypt (`$2y$`, `$2b$`, `$2a$`), SHA-512 crypt
 (`$6$`), and Argon2id (`$argon2id$`).  Plain, MD5-crypt, DES, and
 SHA-1 are rejected at parse time.
 
+Argon2id hashes must be version 19 in the standard encoded form,
+`$argon2id$v=19$m=...,t=...,p=...$salt$hash`.  An entry without
+`v=19`, with the cost parameters in another order, or with the
+optional `keyid`/`data` parameters never matches a password.
+
 Groups can be expressed by appending `:group1,group2` after the
 hash (one extra colon-separated field).  The file is re-read when
 its mtime changes; parses happen on demand and are cached for
